@@ -8,12 +8,12 @@
   "env": {
     "API_ID": {
       "description": "Get this value from https://my.telegram.org",
-      "value": "your_api_id_here",
+      "value": "26849910",
       "required": true
     },
     "API_HASH": {
       "description": "Get this value from https://my.telegram.org",
-      "value": "your_api_hash_here",
+      "value": "126a6f9deec2961a8075ce615d58a800",
       "required": true
     },
     "BOT_TOKEN": {
@@ -28,12 +28,12 @@
     },
     "OWNER_ID": {
       "description": "The user ID of the user whom you would like to add as OWNER.",
-      "value": "owner_user_id_here",
+      "value": "8111983469",
       "required": true
     },    
     "FREEMIUM_LIMIT": {
       "description": "Batch size for free users",
-      "value": "0",
+      "value": "7",
       "required": true
     },
     "PREMIUM_LIMIT": {
@@ -55,12 +55,12 @@
     
     "WEBSITE_URL": {
       "description": "Enter shortener website domain eg upshrink.com",
-      "value": "upshrink.com",
+      "value": "",
       "required": false
     },
     "AD_API": {
       "description": "Batch size for premium users",
-      "value": "52b4a2cf4687d81e7d3f8f2b7bc2943f618e78cb",
+      "value": "",
       "required": false
     },
     
