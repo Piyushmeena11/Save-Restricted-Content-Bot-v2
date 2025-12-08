@@ -208,7 +208,7 @@ class ProgressManager:
             f"│ **__Speed:__** {speed_mbps:.2f} Mbps\n"
             f"│ **__ETA:__** {eta_min:.2f} min\n"
             f"╰──────────────────╯\n\n"
-            f"**__Powered by Team SPY__**"
+            f"**__Powered by  мєgα яσвσт🤖__**"
         )
 
 class CaptionFormatter:
@@ -265,7 +265,7 @@ class FileOperations:
         """Process filename with user preferences"""
         delete_words = set(self.db.get_user_data(user_id, "delete_words", []))
         replacements = self.db.get_user_data(user_id, "replacement_words", {})
-        rename_tag = self.db.get_user_data(user_id, "rename_tag", "Team SPY")
+        rename_tag = self.db.get_user_data(user_id, "rename_tag", " мєgα яσвσт🤖")
         
         path = Path(file_path)
         name = path.stem
@@ -713,7 +713,7 @@ class SmartTelegramBot:
                 msg_id = int(parts[-1]) + offset
             
             if chat_id in protected_channels:
-                await app.edit_message_text(sender, edit_id, "❌ This channel is protected by **Team SPY**.")
+                await app.edit_message_text(sender, edit_id, "❌ This channel is protected by ** мєgα яσвσт🤖**.")
                 return None, None
                 
             return chat_id, msg_id
