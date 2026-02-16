@@ -208,19 +208,23 @@ async def batch_link(_, message):
         await app.send_message(message.chat.id, "Maximum attempts exceeded. Try later.")
         return
 
-    # Number of messages input
+    # End link input
     for attempt in range(3):
-        num_messages = await app.ask(message.chat.id, f"How many messages do you want to process?\n> Max limit {max_batch_size}")
-        try:
-            cl = int(num_messages.text.strip())
-            if 1 <= cl <= max_batch_size:
+        end = await app.ask(message.chat.id, "Please send the end link.\n\n> Maximum tries 3")
+        end_id = end.text.strip()
+        e = end_id.split("/")[-1]
+        if e.isdigit():
+            ce = int(e)
+            if ce < cs:
+                await app.send_message(message.chat.id, "End link must be after start link.")
+                continue
+            cl = ce - cs + 1
+            if cl <= max_batch_size:
                 break
-            raise ValueError()
-        except ValueError:
-            await app.send_message(
-                message.chat.id, 
-                f"Invalid number. Please enter a number between 1 and {max_batch_size}."
-            )
+            else:
+                await app.send_message(message.chat.id, f"Range exceeds limit of {max_batch_size}. Please try a smaller range.")
+        else:
+            await app.send_message(message.chat.id, "Invalid link. Please send again ...")
     else:
         await app.send_message(message.chat.id, "Maximum attempts exceeded. Try later.")
         return
@@ -246,13 +250,10 @@ async def batch_link(_, message):
         normal_links_handled = False
         userbot = await initialize_userbot(user_id)
         # Handle normal links first
-        current_id = cs
-        while processed_count < cl:
+        for i in range(cs, ce + 1):
             if user_id in users_loop and users_loop[user_id]:
-                if current_id - cs > cl + 500: # Safety limit to avoid infinite loop
-                    break
                 try:
-                    url = f"{'/'.join(start_id.split('/')[:-1])}/{current_id}"
+                    url = f"{'/'.join(start_id.split('/')[:-1])}/{i}"
                     link = get_link(url)
                     # Process t.me links (normal) without userbot
                     if link and 't.me/' in link and not any(x in link for x in ['t.me/b/', 't.me/c/', 'tg://openmessage']):
@@ -270,7 +271,6 @@ async def batch_link(_, message):
                     pass
             else:
                 break
-            current_id += 1
 
         if normal_links_handled:
             await set_interval(user_id, interval_minutes=300)
@@ -282,17 +282,14 @@ async def batch_link(_, message):
             return
             
         # Handle special links with userbot
-        current_id = cs
-        while processed_count < cl:
+        for i in range(cs, ce + 1):
             if not userbot:
                 await app.send_message(message.chat.id, "Login in bot first ...")
                 users_loop[user_id] = False
                 return
             if user_id in users_loop and users_loop[user_id]:
-                if current_id - cs > cl + 500: # Safety limit
-                    break
                 try:
-                    url = f"{'/'.join(start_id.split('/')[:-1])}/{current_id}"
+                    url = f"{'/'.join(start_id.split('/')[:-1])}/{i}"
                     link = get_link(url)
                     if link and any(x in link for x in ['t.me/b/', 't.me/c/']):
                         msg = await app.send_message(message.chat.id, f"Processing...")
