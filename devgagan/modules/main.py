@@ -39,14 +39,18 @@ batch_mode = {}
 
 async def process_and_upload_link(userbot, user_id, msg_id, link, retry_count, message):
     try:
-        await get_msg(userbot, user_id, msg_id, link, retry_count, message)
+        res = await get_msg(userbot, user_id, msg_id, link, retry_count, message)
+        if res is False:
+            return False
+        await asyncio.sleep(15)
+        return True
+    except Exception:
+        return False
+    finally:
         try:
             await app.delete_messages(user_id, msg_id)
         except Exception:
             pass
-        await asyncio.sleep(15)
-    finally:
-        pass
 
 # Function to check if the user can proceed
 async def check_interval(user_id, freecheck):
@@ -250,12 +254,12 @@ async def batch_link(_, message):
                     # Process t.me links (normal) without userbot
                     if link and 't.me/' in link and not any(x in link for x in ['t.me/b/', 't.me/c/', 'tg://openmessage']):
                         msg = await app.send_message(message.chat.id, f"Processing...")
-                        await process_and_upload_link(userbot, user_id, msg.id, link, 0, message)
-                        processed_count += 1
-                        await pin_msg.edit_text(
-                            f"Batch process started ⚡\nProcessing: {processed_count}/{cl}\n\n**__Powered by Team SPY__**",
-                            reply_markup=keyboard
-                        )
+                        if await process_and_upload_link(userbot, user_id, msg.id, link, 0, message):
+                            processed_count += 1
+                            await pin_msg.edit_text(
+                                f"Batch process started ⚡\nProcessing: {processed_count}/{cl}\n\n**__Powered by Team SPY__**",
+                                reply_markup=keyboard
+                            )
                         normal_links_handled = True
                 except Exception:
                     continue
@@ -280,12 +284,12 @@ async def batch_link(_, message):
                     link = get_link(url)
                     if link and any(x in link for x in ['t.me/b/', 't.me/c/']):
                         msg = await app.send_message(message.chat.id, f"Processing...")
-                        await process_and_upload_link(userbot, user_id, msg.id, link, 0, message)
-                        processed_count += 1
-                        await pin_msg.edit_text(
-                            f"Batch process started ⚡\nProcessing: {processed_count}/{cl}\n\n**__Powered by Team SPY__**",
-                            reply_markup=keyboard
-                        )
+                        if await process_and_upload_link(userbot, user_id, msg.id, link, 0, message):
+                            processed_count += 1
+                            await pin_msg.edit_text(
+                                f"Batch process started ⚡\nProcessing: {processed_count}/{cl}\n\n**__Powered by Team SPY__**",
+                                reply_markup=keyboard
+                            )
                 except Exception:
                     continue
 
