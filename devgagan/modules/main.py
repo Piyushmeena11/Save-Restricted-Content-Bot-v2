@@ -246,10 +246,13 @@ async def batch_link(_, message):
         normal_links_handled = False
         userbot = await initialize_userbot(user_id)
         # Handle normal links first
-        for i in range(cs, cs + cl):
+        current_id = cs
+        while processed_count < cl:
             if user_id in users_loop and users_loop[user_id]:
+                if current_id - cs > cl + 500: # Safety limit to avoid infinite loop
+                    break
                 try:
-                    url = f"{'/'.join(start_id.split('/')[:-1])}/{i}"
+                    url = f"{'/'.join(start_id.split('/')[:-1])}/{current_id}"
                     link = get_link(url)
                     # Process t.me links (normal) without userbot
                     if link and 't.me/' in link and not any(x in link for x in ['t.me/b/', 't.me/c/', 'tg://openmessage']):
@@ -261,8 +264,14 @@ async def batch_link(_, message):
                                 reply_markup=keyboard
                             )
                         normal_links_handled = True
+                    elif not normal_links_handled:
+                        break
                 except Exception:
-                    continue
+                    pass
+            else:
+                break
+            current_id += 1
+
         if normal_links_handled:
             await set_interval(user_id, interval_minutes=300)
             await pin_msg.edit_text(
@@ -273,14 +282,17 @@ async def batch_link(_, message):
             return
             
         # Handle special links with userbot
-        for i in range(cs, cs + cl):
+        current_id = cs
+        while processed_count < cl:
             if not userbot:
                 await app.send_message(message.chat.id, "Login in bot first ...")
                 users_loop[user_id] = False
                 return
             if user_id in users_loop and users_loop[user_id]:
+                if current_id - cs > cl + 500: # Safety limit
+                    break
                 try:
-                    url = f"{'/'.join(start_id.split('/')[:-1])}/{i}"
+                    url = f"{'/'.join(start_id.split('/')[:-1])}/{current_id}"
                     link = get_link(url)
                     if link and any(x in link for x in ['t.me/b/', 't.me/c/']):
                         msg = await app.send_message(message.chat.id, f"Processing...")
@@ -291,7 +303,10 @@ async def batch_link(_, message):
                                 reply_markup=keyboard
                             )
                 except Exception:
-                    continue
+                    pass
+            else:
+                break
+            current_id += 1
 
         await set_interval(user_id, interval_minutes=300)
         await pin_msg.edit_text(
