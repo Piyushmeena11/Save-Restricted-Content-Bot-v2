@@ -265,8 +265,6 @@ async def batch_link(_, message):
                                 reply_markup=keyboard
                             )
                         normal_links_handled = True
-                    elif not normal_links_handled:
-                        break
                 except Exception:
                     pass
             else:
@@ -303,7 +301,6 @@ async def batch_link(_, message):
                     pass
             else:
                 break
-            current_id += 1
 
         await set_interval(user_id, interval_minutes=300)
         await pin_msg.edit_text(
