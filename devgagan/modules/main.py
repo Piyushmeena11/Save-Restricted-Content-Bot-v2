@@ -243,17 +243,20 @@ async def batch_link(_, message):
         # Handle normal links first
         for i in range(cs, cs + cl):
             if user_id in users_loop and users_loop[user_id]:
-                url = f"{'/'.join(start_id.split('/')[:-1])}/{i}"
-                link = get_link(url)
-                # Process t.me links (normal) without userbot
-                if 't.me/' in link and not any(x in link for x in ['t.me/b/', 't.me/c/', 'tg://openmessage']):
-                    msg = await app.send_message(message.chat.id, f"Processing...")
-                    await process_and_upload_link(userbot, user_id, msg.id, link, 0, message)
-                    await pin_msg.edit_text(
-                        f"Batch process started ⚡\nProcessing: {i - cs + 1}/{cl}\n\n**__Powered by Team SPY__**",
-                        reply_markup=keyboard
-                    )
-                    normal_links_handled = True
+                try:
+                    url = f"{'/'.join(start_id.split('/')[:-1])}/{i}"
+                    link = get_link(url)
+                    # Process t.me links (normal) without userbot
+                    if link and 't.me/' in link and not any(x in link for x in ['t.me/b/', 't.me/c/', 'tg://openmessage']):
+                        msg = await app.send_message(message.chat.id, f"Processing...")
+                        await process_and_upload_link(userbot, user_id, msg.id, link, 0, message)
+                        await pin_msg.edit_text(
+                            f"Batch process started ⚡\nProcessing: {i - cs + 1}/{cl}\n\n**__Powered by Team SPY__**",
+                            reply_markup=keyboard
+                        )
+                        normal_links_handled = True
+                except Exception:
+                    continue
         if normal_links_handled:
             await set_interval(user_id, interval_minutes=300)
             await pin_msg.edit_text(
@@ -270,15 +273,18 @@ async def batch_link(_, message):
                 users_loop[user_id] = False
                 return
             if user_id in users_loop and users_loop[user_id]:
-                url = f"{'/'.join(start_id.split('/')[:-1])}/{i}"
-                link = get_link(url)
-                if any(x in link for x in ['t.me/b/', 't.me/c/']):
-                    msg = await app.send_message(message.chat.id, f"Processing...")
-                    await process_and_upload_link(userbot, user_id, msg.id, link, 0, message)
-                    await pin_msg.edit_text(
-                        f"Batch process started ⚡\nProcessing: {i - cs + 1}/{cl}\n\n**__Powered by Team SPY__**",
-                        reply_markup=keyboard
-                    )
+                try:
+                    url = f"{'/'.join(start_id.split('/')[:-1])}/{i}"
+                    link = get_link(url)
+                    if link and any(x in link for x in ['t.me/b/', 't.me/c/']):
+                        msg = await app.send_message(message.chat.id, f"Processing...")
+                        await process_and_upload_link(userbot, user_id, msg.id, link, 0, message)
+                        await pin_msg.edit_text(
+                            f"Batch process started ⚡\nProcessing: {i - cs + 1}/{cl}\n\n**__Powered by Team SPY__**",
+                            reply_markup=keyboard
+                        )
+                except Exception:
+                    continue
 
         await set_interval(user_id, interval_minutes=300)
         await pin_msg.edit_text(
