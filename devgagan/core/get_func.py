@@ -130,7 +130,7 @@ class DatabaseManager:
                 {"$unset": {
                     "delete_words": "", "replacement_words": "", 
                     "watermark_text": "", "duration_limit": "",
-                    "custom_caption": "", "rename_tag": ""
+                    "custom_caption": "", "rename_tag": "", "target_chat": ""
                 }}
             )
             self.clear_user_cache(user_id)
@@ -353,7 +353,6 @@ class SmartTelegramBot:
         # User session management
         self.user_sessions: Dict[int, str] = {}
         self.pending_photos: Set[int] = set()
-        self.user_chat_ids: Dict[int, str] = {}
         self.user_rename_prefs: Dict[str, str] = {}
         self.user_caption_prefs: Dict[str, str] = {}
         
@@ -429,7 +428,7 @@ class SmartTelegramBot:
                     width=width,
                     duration=duration,
                     thumb=thumb_path,
-                    reply_to_message_id=topic_id,
+                    message_thread_id=topic_id,
                     parse_mode=ParseMode.MARKDOWN,
                     progress=progress_bar,
                     progress_args=progress_args
@@ -440,7 +439,7 @@ class SmartTelegramBot:
                     chat_id=target_chat_id,
                     photo=file_path,
                     caption=caption,
-                    reply_to_message_id=topic_id,
+                    message_thread_id=topic_id,
                     parse_mode=ParseMode.MARKDOWN,
                     progress=progress_bar,
                     progress_args=progress_args
@@ -451,7 +450,7 @@ class SmartTelegramBot:
                     chat_id=target_chat_id,
                     audio=file_path,
                     caption=caption,
-                    reply_to_message_id=topic_id,
+                    message_thread_id=topic_id,
                     parse_mode=ParseMode.MARKDOWN,
                     progress=progress_bar,
                     progress_args=progress_args
@@ -463,7 +462,7 @@ class SmartTelegramBot:
                     document=file_path,
                     caption=caption,
                     thumb=thumb_path,
-                    reply_to_message_id=topic_id,
+                    message_thread_id=topic_id,
                     parse_mode=ParseMode.MARKDOWN,
                     progress=progress_bar,
                     progress_args=progress_args
@@ -552,8 +551,8 @@ class SmartTelegramBot:
 
         await edit_msg.edit('**✅ 4GB upload starting...**')
         
-        target_chat_str = self.user_chat_ids.get(sender, str(sender))
-        target_chat_id, _ = self.parse_target_chat(target_chat_str)
+        target_chat_str = self.db.get_user_data(sender, "target_chat", str(sender))
+        target_chat_id, topic_id = self.parse_target_chat(target_chat_str)
         
         file_type = self.media_processor.get_file_type(file_path)
         thumb_path = self.get_thumbnail_path(sender)
@@ -574,6 +573,7 @@ class SmartTelegramBot:
                     height=metadata.get('height', 0),
                     width=metadata.get('width', 0),
                     duration=metadata.get('duration', 0),
+                    message_thread_id=topic_id,
                     progress=progress_bar,
                     progress_args=progress_args
                 )
@@ -583,6 +583,7 @@ class SmartTelegramBot:
                     document=file_path,
                     caption=caption,
                     thumb=thumb_path,
+                    message_thread_id=topic_id,
                     progress=progress_bar,
                     progress_args=progress_args
                 )
@@ -597,10 +598,10 @@ class SmartTelegramBot:
                 reply_markup = InlineKeyboardMarkup([[
                     InlineKeyboardButton("💎 Get Premium to Forward", url="https://t.me/kingofpatal")
                 ]])
-                await app.copy_message(target_chat_id, LOG_GROUP, result.id, protect_content=True, reply_markup=reply_markup)
+                await app.copy_message(target_chat_id, LOG_GROUP, result.id, message_thread_id=topic_id, protect_content=True, reply_markup=reply_markup)
             else:
                 # Premium user - send normally
-                await app.copy_message(target_chat_id, LOG_GROUP, result.id)
+                await app.copy_message(target_chat_id, LOG_GROUP, result.id, message_thread_id=topic_id)
 
         except Exception as e:
             print(f"Large file upload error: {e}")
@@ -608,47 +609,35 @@ class SmartTelegramBot:
         finally:
             await edit_msg.delete()
 
-    async def handle_message_download(self, userbot, sender: int, edit_id: int, msg_link: str, offset: int, message):
-        """Main message processing function with enhanced error handling"""
-        edit_msg = None
+    async def _process_message(self, userbot, msg: Message, sender: int, edit_msg: Message):
+        """Processes a fetched message object for downloading and uploading."""
         file_path = None
-        
         try:
-            # Parse and validate message link
-            msg_link = msg_link.split("?single")[0]
-            protected_channels = self.db.get_protected_channels()
-            
-            # Extract chat and message info
-            chat_id, msg_id = await self._parse_message_link(msg_link, offset, protected_channels, sender, edit_id)
-            if not chat_id:
-                return
-            
             # Get target chat configuration
-            target_chat_str = self.user_chat_ids.get(message.chat.id, str(message.chat.id))
+            target_chat_str = self.db.get_user_data(sender, "target_chat", str(sender))
             target_chat_id, topic_id = self.parse_target_chat(target_chat_str)
             
-            # Fetch message
-            msg = await userbot.get_messages(chat_id, msg_id)
             if not msg or msg.service or msg.empty:
-                await app.delete_messages(sender, edit_id)
+                await edit_msg.delete()
                 return
             
             # Handle special message types
-            if await self._handle_special_messages(msg, target_chat_id, topic_id, edit_id, sender):
+            if await self._handle_special_messages(msg, target_chat_id, topic_id, edit_msg.id, sender):
                 return
                 
             # Process media files
             if not msg.media:
+                await edit_msg.delete()
                 return
             
             filename, file_size, media_type = self.media_processor.get_media_info(msg)
             
             # Handle direct media types (voice, video_note, sticker)
-            if await self._handle_direct_media(msg, target_chat_id, topic_id, edit_id, media_type):
+            if await self._handle_direct_media(msg, target_chat_id, topic_id, edit_msg.id, media_type):
                 return
             
             # Download file
-            edit_msg = await app.edit_message_text(sender, edit_id, "**📥 Downloading...**")
+            await edit_msg.edit("**📥 Downloading...**")
             
             progress_args = ("╭──────────────╮\n│ **__Downloading...__**\n├────────", edit_msg, time.time())
             file_path = await userbot.download_media(
@@ -661,7 +650,7 @@ class SmartTelegramBot:
             
             # Handle photos separately
             if media_type == "photo":
-                result = await app.send_photo(target_chat_id, file_path, caption=caption, reply_to_message_id=topic_id)
+                result = await app.send_photo(target_chat_id, file_path, caption=caption, message_thread_id=topic_id)
                 await result.copy(LOG_GROUP)
                 await edit_msg.delete()
                 return
@@ -672,7 +661,7 @@ class SmartTelegramBot:
             if file_size > self.config.SIZE_LIMIT:
                 free_check = 0
                 if 'chk_user' in globals():
-                    free_check = await chk_user(chat_id, sender)
+                    free_check = await chk_user(msg.chat.id, sender)
                 
                 if free_check == 1 or not self.pro_client:
                     # Split file for free users or when pro client unavailable
@@ -690,16 +679,49 @@ class SmartTelegramBot:
             else:
                 await self.upload_with_pyrogram(file_path, sender, target_chat_id, caption, topic_id, edit_msg)
                     
-        except (ChannelBanned, ChannelInvalid, ChannelPrivate, ChatIdInvalid, ChatInvalid) as e:
-            await app.edit_message_text(sender, edit_id, "❌ Access denied. Have you joined the channel?")
         except Exception as e:
-            print(f"Error in message handling: {e}")
-            await app.send_message(LOG_GROUP, f"**Error:** {str(e)}")
+            print(f"Error in _process_message: {e}")
+            try:
+                await edit_msg.edit(f"**Error:** {str(e)}")
+            except:
+                pass
         finally:
             # Cleanup
             if file_path:
                 await self.file_ops._cleanup_file(file_path)
             gc.collect()
+
+    async def handle_message_download(self, userbot, sender: int, edit_id: int, msg_link: str, offset: int, message):
+        """Main message processing function with enhanced error handling"""
+        edit_msg = None
+        
+        try:
+            edit_msg = await app.get_messages(sender, edit_id)
+            # Parse and validate message link
+            msg_link = msg_link.split("?single")[0]
+            protected_channels = self.db.get_protected_channels()
+            
+            # Extract chat and message info
+            chat_id, msg_id = await self._parse_message_link(msg_link, offset, protected_channels, sender, edit_id)
+            if not chat_id:
+                return
+            
+            # Fetch message
+            msg = await userbot.get_messages(chat_id, msg_id)
+
+            # Call the new processing function
+            await self._process_message(userbot, msg, sender, edit_msg)
+
+        except (ChannelBanned, ChannelInvalid, ChannelPrivate, ChatIdInvalid, ChatInvalid) as e:
+            if edit_msg:
+                await edit_msg.edit("❌ Access denied. Have you joined the channel?")
+        except Exception as e:
+            print(f"Error in message handling: {e}")
+            if edit_msg:
+                try:
+                    await edit_msg.edit(f"**Error:** {str(e)}")
+                except:
+                    pass
 
     async def _parse_message_link(self, msg_link: str, offset: int, protected_channels: Set[int], sender: int, edit_id: int) -> Tuple[Optional[int], Optional[int]]:
         """Parse different types of message links"""
@@ -742,13 +764,13 @@ class SmartTelegramBot:
     async def _handle_special_messages(self, msg, target_chat_id: int, topic_id: Optional[int], edit_id: int, sender: int) -> bool:
         """Handle special message types that don't require downloading"""
         if msg.media == MessageMediaType.WEB_PAGE_PREVIEW:
-            result = await app.send_message(target_chat_id, msg.text.markdown, reply_to_message_id=topic_id)
+            result = await app.send_message(target_chat_id, msg.text.markdown, message_thread_id=topic_id)
             await result.copy(LOG_GROUP)
             await app.delete_messages(sender, edit_id)
             return True
         
         if msg.text:
-            result = await app.send_message(target_chat_id, msg.text.markdown, reply_to_message_id=topic_id)
+            result = await app.send_message(target_chat_id, msg.text.markdown, message_thread_id=topic_id)
             await result.copy(LOG_GROUP)
             await app.delete_messages(sender, edit_id)
             return True
@@ -761,11 +783,11 @@ class SmartTelegramBot:
         
         try:
             if media_type == "sticker":
-                result = await app.send_sticker(target_chat_id, msg.sticker.file_id, reply_to_message_id=topic_id)
+                result = await app.send_sticker(target_chat_id, msg.sticker.file_id, message_thread_id=topic_id)
             elif media_type == "voice":
-                result = await app.send_voice(target_chat_id, msg.voice.file_id, reply_to_message_id=topic_id)
+                result = await app.send_voice(target_chat_id, msg.voice.file_id, message_thread_id=topic_id)
             elif media_type == "video_note":
-                result = await app.send_video_note(target_chat_id, msg.video_note.file_id, reply_to_message_id=topic_id)
+                result = await app.send_video_note(target_chat_id, msg.video_note.file_id, message_thread_id=topic_id)
             
             if result:
                 await result.copy(LOG_GROUP)
@@ -807,7 +829,7 @@ class SmartTelegramBot:
 
     async def _copy_public_message(self, app_client, userbot, sender: int, chat_id: str, message_id: int, edit_id: int):
         """Handle copying from public channels/groups"""
-        target_chat_str = self.user_chat_ids.get(sender, str(sender))
+        target_chat_str = self.db.get_user_data(sender, "target_chat", str(sender))
         target_chat_id, topic_id = self.parse_target_chat(target_chat_str)
         file_path = None
         
@@ -820,11 +842,11 @@ class SmartTelegramBot:
             if msg.media and not msg.document and not msg.video:
                 # For photos and other simple media
                 if msg.photo:
-                    result = await app_client.send_photo(target_chat_id, msg.photo.file_id, caption=final_caption, reply_to_message_id=topic_id)
+                    result = await app_client.send_photo(target_chat_id, msg.photo.file_id, caption=final_caption, message_thread_id=topic_id)
                 elif msg.video:
-                    result = await app_client.send_video(target_chat_id, msg.video.file_id, caption=final_caption, reply_to_message_id=topic_id)
+                    result = await app_client.send_video(target_chat_id, msg.video.file_id, caption=final_caption, message_thread_id=topic_id)
                 elif msg.document:
-                    result = await app_client.send_document(target_chat_id, msg.document.file_id, caption=final_caption, reply_to_message_id=topic_id)
+                    result = await app_client.send_document(target_chat_id, msg.document.file_id, caption=final_caption, message_thread_id=topic_id)
                 
                 if 'result' in locals():
                     await result.copy(LOG_GROUP)
@@ -832,7 +854,7 @@ class SmartTelegramBot:
                     return
 
             elif msg.text:
-                result = await app_client.copy_message(target_chat_id, chat_id, message_id, reply_to_message_id=topic_id)
+                result = await app_client.copy_message(target_chat_id, chat_id, message_id, message_thread_id=topic_id)
                 await result.copy(LOG_GROUP)
                 await app.delete_messages(sender, edit_id)
                 return
@@ -853,7 +875,7 @@ class SmartTelegramBot:
                     return
 
                 if msg.text:
-                    await app_client.send_message(target_chat_id, msg.text.markdown, reply_to_message_id=topic_id)
+                    await app_client.send_message(target_chat_id, msg.text.markdown, message_thread_id=topic_id)
                     await edit_msg.delete()
                     return
 
@@ -867,7 +889,7 @@ class SmartTelegramBot:
                 filename, file_size, media_type = self.media_processor.get_media_info(msg)
 
                 if media_type == "photo":
-                    result = await app_client.send_photo(target_chat_id, file_path, caption=final_caption, reply_to_message_id=topic_id)
+                    result = await app_client.send_photo(target_chat_id, file_path, caption=final_caption, message_thread_id=topic_id)
                 elif file_size > self.config.SIZE_LIMIT:
                     free_check = 0
                     if 'chk_user' in globals():
@@ -1039,7 +1061,7 @@ async def callback_query_handler(event):
     elif data == b'reset':
         try:
             success = telegram_bot.db.reset_user_data(user_id)
-            telegram_bot.user_chat_ids.pop(user_id, None)
+            telegram_bot.db.clear_user_cache(user_id)
             telegram_bot.user_rename_prefs.pop(str(user_id), None)
             telegram_bot.user_caption_prefs.pop(str(user_id), None)
             
@@ -1084,11 +1106,14 @@ async def user_input_handler(event):
         if session_type == 'setchat':
             try:
                 chat_id = event.text.strip()
-                telegram_bot.user_chat_ids[user_id] = chat_id
+                if not re.match(r'^-?\d+(/\d+)?$', chat_id):
+                    await event.respond("❌ Invalid format. Use `chat_id` or `chat_id/topic_id`.")
+                    del telegram_bot.user_sessions[user_id]
+                    return
+                telegram_bot.db.save_user_data(user_id, "target_chat", chat_id)
                 await event.respond(f"✅ Target chat set to: `{chat_id}`")
             except ValueError:
                 await event.respond("❌ Invalid chat ID format!")
-                
         elif session_type == 'setrename':
             rename_tag = event.text.strip()
             telegram_bot.user_rename_prefs[str(user_id)] = rename_tag
