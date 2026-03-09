@@ -20,7 +20,7 @@ import asyncio
 from pyrogram import filters, Client
 from devgagan import app, userrbot
 from config import API_ID, API_HASH, FREEMIUM_LIMIT, PREMIUM_LIMIT, OWNER_ID, DEFAULT_SESSION
-from devgagan.core.get_func import get_msg
+from devgagan.core.get_func import get_msg, telegram_bot
 from devgagan.core.func import *
 from devgagan.core.mongo import db
 from pyrogram.errors import FloodWait
@@ -335,3 +335,106 @@ async def stop_batch(_, message):
             message.chat.id, 
             "No active batch processing is running to cancel."
         )
+
+@app.on_message(filters.command("topic") & filters.private)
+async def topic_batch(_, message):
+    join = await subscribe(_, message)
+    if join == 1:
+        return
+    user_id = message.chat.id
+    if users_loop.get(user_id, False):
+        await app.send_message(user_id, "You already have a process running. Please wait or /cancel.")
+        return
+
+    freecheck = await chk_user(message, user_id)
+    if freecheck == 1 and FREEMIUM_LIMIT == 0 and user_id not in OWNER_ID and not await is_user_verified(user_id):
+        await message.reply("Freemium service is currently not available. Upgrade to premium for access.")
+        return
+
+    max_batch_size = (FREEMIUM_LIMIT + 20) if await is_user_verified(user_id) else (FREEMIUM_LIMIT if freecheck == 1 else PREMIUM_LIMIT)
+
+    try:
+        start_link_msg = await app.ask(message.chat.id, "Please send the Start Message Link from the topic.", timeout=60)
+        start_link = start_link_msg.text.strip()
+        if "/c/" not in start_link:
+            await start_link_msg.reply("❌ Invalid Link. Please send a valid message link from a private channel/supergroup topic.")
+            return
+    except asyncio.TimeoutError:
+        await message.reply("⏰ Timed out. Please try again.")
+        return
+
+    try:
+        parts = start_link.split("/")
+        chat_id_str = parts[parts.index('c') + 1]
+        chat_id = int(f"-100{chat_id_str}")
+        start_msg_id = int(parts[-1])
+        
+        userbot = await initialize_userbot(user_id)
+        if not userbot:
+            await message.reply("❌ Userbot not initialized. Please /login first.")
+            return
+            
+        start_message_obj = await userbot.get_messages(chat_id, start_msg_id)
+        if not start_message_obj or not getattr(start_message_obj, 'message_thread_id', None):
+            await message.reply("❌ This message is not part of a topic or I can't access it.")
+            return
+        topic_id = start_message_obj.message_thread_id
+    except Exception as e:
+        await message.reply(f"❌ Error parsing start link: {e}")
+        return
+
+    try:
+        end_link_msg = await app.ask(message.chat.id, "Please send the End Message Link, or type 'no' to download the rest of the topic.", timeout=60)
+        if end_link_msg.text.strip().lower() == 'no':
+            last_messages = await userbot.get_chat_history(chat_id, limit=1)
+            end_msg_id = last_messages[0].id if last_messages else start_msg_id + max_batch_size
+        else:
+            end_link = end_link_msg.text.strip()
+            if "/c/" not in end_link or str(chat_id_str) not in end_link:
+                await end_link_msg.reply("❌ Invalid Link. End link must be from the same chat.")
+                return
+            end_parts = end_link.split("/")
+            end_msg_id = int(end_parts[-1])
+    except asyncio.TimeoutError:
+        await message.reply("⏰ Timed out. Please try again.")
+        return
+    except Exception as e:
+        await message.reply(f"❌ Error parsing end link: {e}")
+        return
+
+    if end_msg_id < start_msg_id:
+        await message.reply("End message must be after start message.")
+        return
+
+    total_to_check = end_msg_id - start_msg_id + 1
+    if total_to_check > max_batch_size:
+        await message.reply(f"Range exceeds limit of {max_batch_size}. Please try a smaller range.")
+        return
+
+    pin_msg = await app.send_message(user_id, f"Topic batch process started ⚡\nTotal messages to check: {total_to_check}\n\n**Powered by Team SPY**")
+    users_loop[user_id] = True
+    processed_count = 0
+    
+    try:
+        for i in range(start_msg_id, end_msg_id + 1):
+            if not users_loop.get(user_id):
+                await pin_msg.edit("🛑 Batch process cancelled.")
+                break
+            try:
+                current_msg = await userbot.get_messages(chat_id, i)
+                if current_msg and getattr(current_msg, 'message_thread_id', None) == topic_id:
+                    edit_msg = await app.send_message(user_id, f"Processing message {current_msg.id}...")
+                    await telegram_bot._process_message(userbot, current_msg, user_id, edit_msg)
+                    processed_count += 1
+                    await pin_msg.edit(f"Topic batch process running ⚡\nProcessed: {processed_count}\nChecked: {i - start_msg_id + 1}/{total_to_check}\n\n**Powered by Team SPY**")
+                    await asyncio.sleep(15)
+            except FloodWait as fw:
+                await pin_msg.edit(f"Floodwait of {fw.value} seconds. Sleeping...")
+                await asyncio.sleep(fw.value + 5)
+            except Exception:
+                pass
+        await pin_msg.edit(f"✅ Topic batch completed!\nProcessed {processed_count} messages.")
+    except Exception as e:
+        await message.reply(f"An error occurred during batch processing: {e}")
+    finally:
+        users_loop[user_id] = False
