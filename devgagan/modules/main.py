@@ -386,8 +386,8 @@ async def topic_batch(_, message):
     try:
         end_link_msg = await app.ask(message.chat.id, "Please send the End Message Link, or type 'no' to download the rest of the topic.", timeout=60)
         if end_link_msg.text.strip().lower() == 'no':
-            last_messages = await userbot.get_chat_history(chat_id, limit=1)
-            end_msg_id = last_messages[0].id if last_messages else start_msg_id + max_batch_size
+            last_message_list = [msg async for msg in userbot.get_chat_history(chat_id, limit=1)]
+            end_msg_id = last_message_list[0].id if last_message_list else start_msg_id + max_batch_size
         else:
             end_link = end_link_msg.text.strip()
             if "/c/" not in end_link or str(chat_id_str) not in end_link:
