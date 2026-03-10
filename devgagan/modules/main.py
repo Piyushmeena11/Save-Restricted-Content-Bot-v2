@@ -355,7 +355,7 @@ async def topic_batch(_, message):
         await app.send_message(user_id, "You already have a process running. Please wait or /cancel.")
         return
 
-    freecheck = await chk_user(message, user_id)
+    freecheck = await chk_user(message.chat.id, user_id) # Corrected chk_user call
     if freecheck == 1 and FREEMIUM_LIMIT == 0 and user_id not in OWNER_ID and not await is_user_verified(user_id):
         await message.reply("Freemium service is currently not available. Upgrade to premium for access.")
         return
@@ -456,18 +456,16 @@ async def topic_batch(_, message):
     
     try:
         messages_to_process = []
-        # Optimized Message Fetching: Use iter_history with min_id and max_id and message_thread_id
-        # iter_history yields messages from newest to oldest by default, but we filter by topic_id.
-        # We collect them and then sort to process chronologically.
-        async for msg in userbot.get_chat_history(chat_id):
+        # Optimized Message Fetching: Use iter_history with message_thread_id for direct filtering
+        # Iterate from end_msg_id downwards (reverse=True)
+        async for msg in userbot.iter_history(chat_id, offset_id=end_msg_id + 1, reverse=True, message_thread_id=topic_id):
             if not users_loop.get(user_id):
                 break  # Stop if the user cancelled
             
-            # Since get_chat_history goes from newest to oldest, we can stop once we are below the start_id
+            # Stop once we are below the start_msg_id
             if msg.id < start_msg_id:
                 break
-            # Filter for messages within the range and belonging to the correct topic
-            if msg.id <= end_msg_id and getattr(msg, 'message_thread_id', None) == topic_id:
+            if msg.id <= end_msg_id: # iter_history with message_thread_id already filters by topic
                 messages_to_process.append(msg)
         
         # Sort messages by ID to ensure chronological processing
@@ -495,7 +493,7 @@ async def topic_batch(_, message):
                         )
                         # Save progress after each successful message
                         telegram_bot.db.save_user_data(user_id, last_processed_id_key, message_obj.id)
-                        await asyncio.sleep(1) # Small delay between concurrent tasks to avoid hammering API
+                        # Removed asyncio.sleep(1) here for better performance, relying on semaphore and FloodWait
                     except FloodWait as fw:
                         await pin_msg.edit(f"Floodwait of {fw.value} seconds. Sleeping...")
                         await asyncio.sleep(fw.value + 5) # Sleep for FloodWait + buffer
