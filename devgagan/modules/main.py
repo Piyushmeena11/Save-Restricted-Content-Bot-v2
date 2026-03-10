@@ -17,7 +17,7 @@ import time
 import random
 import string
 import asyncio
-from pyrogram import filters, Client
+from pyrogram import filters, Client # Added Semaphore
 from devgagan import app, userrbot
 from config import API_ID, API_HASH, FREEMIUM_LIMIT, PREMIUM_LIMIT, OWNER_ID, DEFAULT_SESSION
 from devgagan.core.get_func import get_msg, telegram_bot
@@ -36,6 +36,7 @@ async def generate_random_name(length=8):
 users_loop = {}
 interval_set = {}
 batch_mode = {}
+CONCURRENT_UPLOADS = 3 # Number of messages to process concurrently for /topic command
 
 async def process_and_upload_link(userbot, user_id, msg_id, link, retry_count, message):
     try:
@@ -346,7 +347,7 @@ async def topic_batch(_, message):
         await app.send_message(user_id, "You already have a process running. Please wait or /cancel.")
         return
 
-    freecheck = await chk_user(message, user_id)
+    freecheck = await chk_user(message.chat.id, user_id)
     if freecheck == 1 and FREEMIUM_LIMIT == 0 and user_id not in OWNER_ID and not await is_user_verified(user_id):
         await message.reply("Freemium service is currently not available. Upgrade to premium for access.")
         return
@@ -374,7 +375,8 @@ async def topic_batch(_, message):
             await message.reply("❌ Userbot not initialized. Please /login first.")
             return
             
-        start_message_obj = await userbot.get_messages(chat_id, start_msg_id)
+        initial_start_msg_id = start_msg_id # Store initial start ID for potential resumption
+        start_message_obj = await userbot.get_messages(chat_id, initial_start_msg_id)
         if not start_message_obj or not getattr(start_message_obj, 'message_thread_id', None):
             await message.reply("❌ This message is not part of a topic or I can't access it.")
             return
@@ -382,6 +384,29 @@ async def topic_batch(_, message):
     except Exception as e:
         await message.reply(f"❌ Error parsing start link: {e}")
         return
+    
+    # --- Progress Resumption Check ---
+    last_processed_id_key = f"last_processed_topic_msg_id_{chat_id}_{topic_id}"
+    saved_last_processed_id = telegram_bot.db.get_user_data(user_id, last_processed_id_key, None)
+    
+    start_msg_id = initial_start_msg_id # Default start ID
+    if saved_last_processed_id and saved_last_processed_id >= initial_start_msg_id:
+        try:
+            resume_choice_msg = await app.ask(
+                message.chat.id, 
+                f"A previous process for this topic ({chat_id}/{topic_id}) was stopped at message ID {saved_last_processed_id}. "
+                f"Do you want to resume from there? (yes/no)", 
+                timeout=30
+            )
+            if resume_choice_msg.text.strip().lower() == 'yes':
+                start_msg_id = saved_last_processed_id + 1 # Start from the next message
+                await message.reply(f"✅ Resuming from message ID {start_msg_id}.")
+            else:
+                telegram_bot.db.save_user_data(user_id, last_processed_id_key, None) # Clear saved progress
+                await message.reply("Starting a new process.")
+        except asyncio.TimeoutError:
+            await message.reply("⏰ Timed out. Starting a new process.")
+            telegram_bot.db.save_user_data(user_id, last_processed_id_key, None) # Clear saved progress
 
     try:
         is_full_topic_download = False
@@ -408,35 +433,80 @@ async def topic_batch(_, message):
         await message.reply("End message must be after start message.")
         return
 
-    total_to_check = end_msg_id - start_msg_id + 1
-    if not is_full_topic_download and total_to_check > max_batch_size:
+    # --- Batch Size Limit Check (only for non-full topic downloads) --- 
+    total_messages_in_range = end_msg_id - start_msg_id + 1
+    if not is_full_topic_download and total_messages_in_range > max_batch_size:
         await message.reply(f"Range exceeds limit of {max_batch_size}. Please try a smaller range.")
         return
 
-    pin_msg = await app.send_message(user_id, f"Topic batch process started ⚡\nTotal messages to check: {total_to_check}\n\n**Powered by Team SPY**")
+    pin_msg = await app.send_message(user_id, f"Topic batch process started ⚡\nFetching messages...\n\n**Powered by Team SPY**")
     users_loop[user_id] = True
     processed_count = 0
     
+    semaphore = asyncio.Semaphore(CONCURRENT_UPLOADS) # Concurrency control
+    tasks = []
+    
     try:
-        for i in range(start_msg_id, end_msg_id + 1):
+        messages_to_process = []
+        # Optimized Message Fetching: Use iter_history with min_id and max_id and message_thread_id
+        # iter_history yields messages from newest to oldest by default, but we filter by topic_id.
+        # We collect them and then sort to process chronologically.
+        async for msg in userbot.iter_history(chat_id, min_id=start_msg_id - 1, max_id=end_msg_id + 1, message_thread_id=topic_id):
+            if getattr(msg, 'message_thread_id', None) == topic_id and start_msg_id <= msg.id <= end_msg_id:
+                messages_to_process.append(msg)
+        
+        # Sort messages by ID to ensure chronological processing
+        messages_to_process.sort(key=lambda m: m.id)
+        
+        total_actual_messages = len(messages_to_process)
+        await pin_msg.edit(f"Topic batch process started ⚡\nFound {total_actual_messages} messages in topic. Processing...\n\n**Powered by Team SPY**")
+
+        for msg_obj in messages_to_process:
             if not users_loop.get(user_id):
                 await pin_msg.edit("🛑 Batch process cancelled.")
                 break
-            try:
-                current_msg = await userbot.get_messages(chat_id, i)
-                if current_msg and getattr(current_msg, 'message_thread_id', None) == topic_id:
-                    edit_msg = await app.send_message(user_id, f"Processing message {current_msg.id}...")
-                    await telegram_bot._process_message(userbot, current_msg, user_id, edit_msg)
-                    processed_count += 1
-                    await pin_msg.edit(f"Topic batch process running ⚡\nProcessed: {processed_count}\nChecked: {i - start_msg_id + 1}/{total_to_check}\n\n**Powered by Team SPY**")
-                    await asyncio.sleep(15)
-            except FloodWait as fw:
-                await pin_msg.edit(f"Floodwait of {fw.value} seconds. Sleeping...")
-                await asyncio.sleep(fw.value + 5)
-            except Exception:
-                pass
+            
+            async def process_single_message(message_obj):
+                nonlocal processed_count
+                async with semaphore: # Acquire semaphore before processing
+                    try:
+                        edit_msg = await app.send_message(user_id, f"Processing message {message_obj.id}...")
+                        await telegram_bot._process_message(userbot, message_obj, user_id, edit_msg)
+                        processed_count += 1
+                        # Update progress in main message
+                        await pin_msg.edit(
+                            f"Topic batch process running ⚡\nProcessed: {processed_count}/{total_actual_messages}\n"
+                            f"Current: {message_obj.id}\n\n**Powered by Team SPY**"
+                        )
+                        # Save progress after each successful message
+                        telegram_bot.db.save_user_data(user_id, last_processed_id_key, message_obj.id)
+                        await asyncio.sleep(1) # Small delay between concurrent tasks to avoid hammering API
+                    except FloodWait as fw:
+                        await pin_msg.edit(f"Floodwait of {fw.value} seconds. Sleeping...")
+                        await asyncio.sleep(fw.value + 5) # Sleep for FloodWait + buffer
+                    except Exception as e:
+                        print(f"Error processing message {message_obj.id}: {e}")
+                        await app.send_message(LOG_GROUP, f"Error processing message {message_obj.id} for user {user_id}: {e}")
+            
+            tasks.append(process_single_message(msg_obj))
+            
+            # If we have enough tasks or reached the end, run them
+            if len(tasks) >= CONCURRENT_UPLOADS or msg_obj == messages_to_process[-1]:
+                await asyncio.gather(*tasks)
+                tasks = [] # Clear tasks after running
+
+        if tasks: # Run any remaining tasks
+            await asyncio.gather(*tasks)
+
         await pin_msg.edit(f"✅ Topic batch completed!\nProcessed {processed_count} messages.")
+        # Clear saved progress after completion
+        telegram_bot.db.save_user_data(user_id, last_processed_id_key, None)
     except Exception as e:
         await message.reply(f"An error occurred during batch processing: {e}")
+        await app.send_message(LOG_GROUP, f"Critical error in /topic for user {user_id}: {e}")
     finally:
         users_loop[user_id] = False
+        # Ensure any pending tasks are cancelled if loop breaks prematurely
+        for task in tasks:
+            if not task.done():
+                task.cancel()
