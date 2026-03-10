@@ -17,9 +17,9 @@ import time
 import random
 import string
 import asyncio
-from pyrogram import filters, Client # Added Semaphore
+from pyrogram import filters, Client
 from devgagan import app, userrbot
-from config import API_ID, API_HASH, FREEMIUM_LIMIT, PREMIUM_LIMIT, OWNER_ID, DEFAULT_SESSION
+from config import API_ID, API_HASH, FREEMIUM_LIMIT, PREMIUM_LIMIT, OWNER_ID, DEFAULT_SESSION, LOG_GROUP
 from devgagan.core.get_func import get_msg, telegram_bot
 from devgagan.core.func import *
 from devgagan.core.mongo import db
@@ -131,25 +131,33 @@ async def single_link(_, message):
             pass
 
 
-async def initialize_userbot(user_id): # this ensure the single startup .. even if logged in or not
+async def initialize_userbot(user_id):
     data = await db.get_data(user_id)
     if data and data.get("session"):
         try:
-            device = 'iPhone 16 Pro' # added gareebi text
+            device = 'iPhone 16 Pro'
             userbot = Client(
-                "userbot",
+                name=f"userbot_{user_id}",
                 api_id=API_ID,
                 api_hash=API_HASH,
                 device_model=device,
-                session_string=data.get("session")
+                session_string=data.get("session"),
+                in_memory=True
             )
             await userbot.start()
             return userbot
-        except Exception:
-            await app.send_message(user_id, "Login Expired re do login")
+        except Exception as e:
+            print(f"Failed to initialize userbot for {user_id}: {e}")
+            await app.send_message(user_id, "Login Expired or invalid. Please /login again.")
             return None
     else:
         if DEFAULT_SESSION:
+            if userrbot and not userrbot.is_connected:
+                try:
+                    await userrbot.start()
+                except Exception as e:
+                    print(f"Failed to start default session: {e}")
+                    return None
             return userrbot
         else:
             return None
@@ -347,7 +355,7 @@ async def topic_batch(_, message):
         await app.send_message(user_id, "You already have a process running. Please wait or /cancel.")
         return
 
-    freecheck = await chk_user(message.chat.id, user_id)
+    freecheck = await chk_user(message, user_id)
     if freecheck == 1 and FREEMIUM_LIMIT == 0 and user_id not in OWNER_ID and not await is_user_verified(user_id):
         await message.reply("Freemium service is currently not available. Upgrade to premium for access.")
         return
@@ -451,8 +459,15 @@ async def topic_batch(_, message):
         # Optimized Message Fetching: Use iter_history with min_id and max_id and message_thread_id
         # iter_history yields messages from newest to oldest by default, but we filter by topic_id.
         # We collect them and then sort to process chronologically.
-        async for msg in userbot.iter_history(chat_id, min_id=start_msg_id - 1, max_id=end_msg_id + 1, message_thread_id=topic_id):
-            if getattr(msg, 'message_thread_id', None) == topic_id and start_msg_id <= msg.id <= end_msg_id:
+        async for msg in userbot.get_chat_history(chat_id, message_thread_id=topic_id):
+            if not users_loop.get(user_id):
+                break  # Stop if the user cancelled
+            
+            # Since get_chat_history goes from newest to oldest, we can stop once we are below the start_id
+            if msg.id < start_msg_id:
+                break
+            
+            if msg.id <= end_msg_id:
                 messages_to_process.append(msg)
         
         # Sort messages by ID to ensure chronological processing
