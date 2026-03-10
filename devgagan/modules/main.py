@@ -459,15 +459,15 @@ async def topic_batch(_, message):
         # Optimized Message Fetching: Use iter_history with min_id and max_id and message_thread_id
         # iter_history yields messages from newest to oldest by default, but we filter by topic_id.
         # We collect them and then sort to process chronologically.
-        async for msg in userbot.get_chat_history(chat_id, message_thread_id=topic_id):
+        async for msg in userbot.get_chat_history(chat_id):
             if not users_loop.get(user_id):
                 break  # Stop if the user cancelled
             
             # Since get_chat_history goes from newest to oldest, we can stop once we are below the start_id
             if msg.id < start_msg_id:
                 break
-            
-            if msg.id <= end_msg_id:
+            # Filter for messages within the range and belonging to the correct topic
+            if msg.id <= end_msg_id and getattr(msg, 'message_thread_id', None) == topic_id:
                 messages_to_process.append(msg)
         
         # Sort messages by ID to ensure chronological processing
