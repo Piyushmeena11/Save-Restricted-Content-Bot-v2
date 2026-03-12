@@ -17,9 +17,9 @@ import time
 import random
 import string
 import asyncio
-from pyrogram import filters, Client
+from pyrogram import filters, Client # Added Semaphore
 from devgagan import app, userrbot
-from config import API_ID, API_HASH, FREEMIUM_LIMIT, PREMIUM_LIMIT, OWNER_ID, DEFAULT_SESSION, LOG_GROUP
+from config import API_ID, API_HASH, FREEMIUM_LIMIT, PREMIUM_LIMIT, OWNER_ID, DEFAULT_SESSION
 from devgagan.core.get_func import get_msg, telegram_bot
 from devgagan.core.func import *
 from devgagan.core.mongo import db
@@ -36,14 +36,13 @@ async def generate_random_name(length=8):
 users_loop = {}
 interval_set = {}
 batch_mode = {}
-CONCURRENT_UPLOADS = 5
 
 async def process_and_upload_link(userbot, user_id, msg_id, link, retry_count, message):
     try:
         res = await get_msg(userbot, user_id, msg_id, link, retry_count, message)
         if res is False:
             return False
-        # await asyncio.sleep(15) # Removed this bottleneck. Rate is handled by check_interval.
+        # await asyncio.sleep(15) # Removed fixed delay for adaptive rate limiting
         return True
     except Exception:
         return False
@@ -356,7 +355,7 @@ async def topic_batch(_, message):
         await app.send_message(user_id, "You already have a process running. Please wait or /cancel.")
         return
 
-    freecheck = await chk_user(message, user_id)
+    freecheck = await chk_user(message.chat.id, user_id) # Corrected chk_user call
     if freecheck == 1 and FREEMIUM_LIMIT == 0 and user_id not in OWNER_ID and not await is_user_verified(user_id):
         await message.reply("Freemium service is currently not available. Upgrade to premium for access.")
         return
@@ -425,25 +424,27 @@ async def topic_batch(_, message):
 
     pin_msg = await app.send_message(user_id, f"Topic batch process started ⚡\nTotal messages to check: {total_to_check}\n\n**Powered by Team SPY**")
     users_loop[user_id] = True
+    
+    download_queue = asyncio.Queue()
     processed_count = 0
     failed_count = 0
     
-    semaphore = asyncio.Semaphore(CONCURRENT_UPLOADS)
-    tasks = []
-    
     try:
-        # Fetch all relevant message objects first for better performance
+        # --- Step 1: Efficient Message Fetching ---
         messages_to_process = []
         await pin_msg.edit("Fetching message list from topic...")
+        
+        # Iterate through chat history and filter by topic_id and message ID range
+        # get_chat_history fetches from newest to oldest by default
         async for msg in userbot.get_chat_history(chat_id):
             if not users_loop.get(user_id):
                 break
-            if msg.id < start_msg_id:
-                break  # Since get_chat_history goes from new to old, we can stop
+            if msg.id < start_msg_id: # Optimization: stop if we're below the start ID
+                break
             if msg.id <= end_msg_id and getattr(msg, 'message_thread_id', None) == topic_id:
                 messages_to_process.append(msg)
 
-        messages_to_process.reverse()  # Sort from oldest to newest for chronological processing
+        messages_to_process.reverse() # Sort from oldest to newest for chronological processing
         total_actual_messages = len(messages_to_process)
         
         if total_actual_messages == 0:
@@ -451,44 +452,71 @@ async def topic_batch(_, message):
             users_loop[user_id] = False
             return
 
-        await pin_msg.edit(f"Found {total_actual_messages} messages. Starting concurrent processing...")
+        await pin_msg.edit(f"Found {total_actual_messages} messages. Starting pipeline processing...")
 
-        async def process_single_message(message_obj):
-            nonlocal processed_count, failed_count
-            async with semaphore:
+        # --- Step 2 & 3: Pipeline Processing (Download while Uploading) and Smart Delay ---
+        async def downloader_task():
+            nonlocal failed_count
+            for msg_obj in messages_to_process:
                 if not users_loop.get(user_id):
-                    return
-
+                    break
                 try:
-                    edit_msg = await app.send_message(user_id, f"Processing message `{message_obj.id}`...")
-                    await telegram_bot._process_message(userbot, message_obj, user_id, edit_msg)
-                    processed_count += 1
+                    # Download the file
+                    edit_msg = await app.send_message(user_id, f"📥 Downloading message `{msg_obj.id}`...")
+                    file_path = await userbot.download_media(msg_obj, file_name=f"downloads/{msg_obj.id}")
+                    await edit_msg.delete()
+                    
+                    # Put the downloaded file path into the queue for uploading
+                    await download_queue.put((msg_obj, file_path))
                 except FloodWait as fw:
-                    await pin_msg.edit(f"Floodwait of {fw.value}s. One task is sleeping...")
-                    await asyncio.sleep(fw.value + 5)
                     failed_count += 1
-                    await app.send_message(LOG_GROUP, f"Task for msg {message_obj.id} (user {user_id}) hit FloodWait & was skipped after waiting.")
+                    await pin_msg.edit(f"Floodwait of {fw.value}s during download. Sleeping...")
+                    await asyncio.sleep(fw.value + 5)
+                    await app.send_message(LOG_GROUP, f"Download for msg {msg_obj.id} (user {user_id}) hit FloodWait & was skipped after waiting.")
                 except Exception as e:
                     failed_count += 1
-                    print(f"Failed to process {message_obj.id}: {e}")
-                    await app.send_message(LOG_GROUP, f"Error processing message {message_obj.id} for user {user_id}: {e}")
+                    print(f"Error downloading message {msg_obj.id}: {e}")
+                    await app.send_message(LOG_GROUP, f"Error downloading message {msg_obj.id} for user {user_id}: {e}")
+            await download_queue.put(None) # Sentinel to signal end of downloads
+
+        async def uploader_task():
+            nonlocal processed_count, failed_count
+            while True:
+                if not users_loop.get(user_id):
+                    break
+                item = await download_queue.get()
+                if item is None: # Sentinel received, no more files to upload
+                    break
+                
+                msg_obj, file_path = item
+                try:
+                    edit_msg = await app.send_message(user_id, f"⬆️ Uploading message `{msg_obj.id}`...")
+                    await telegram_bot._process_message(userbot, msg_obj, user_id, edit_msg, downloaded_file_path=file_path)
+                    processed_count += 1
+                except FloodWait as fw:
+                    failed_count += 1
+                    await pin_msg.edit(f"Floodwait of {fw.value}s during upload. One task is sleeping...")
+                    await asyncio.sleep(fw.value + 5)
+                    await app.send_message(LOG_GROUP, f"Upload for msg {msg_obj.id} (user {user_id}) hit FloodWait & was skipped after waiting.")
+                except Exception as e:
+                    failed_count += 1
+                    print(f"Error uploading message {msg_obj.id}: {e}")
+                    await app.send_message(LOG_GROUP, f"Error uploading message {msg_obj.id} for user {user_id}: {e}")
                 finally:
+                    # Update progress in main message
                     await pin_msg.edit(
-                        f"Topic batch running ⚡\n"
+                        f"Topic batch process running ⚡\n"
                         f"Processed: {processed_count}/{total_actual_messages}\n"
                         f"Failed: {failed_count}\n"
-                        f"Current: {message_obj.id}\n\n"
+                        f"Current: {msg_obj.id}\n\n"
                         f"**Powered by Team SPY**"
                     )
+                    if file_path and os.path.exists(file_path):
+                        os.remove(file_path) # Clean up downloaded file after upload attempt
+                download_queue.task_done()
 
-        for msg_obj in messages_to_process:
-            if not users_loop.get(user_id):
-                break
-            task = asyncio.create_task(process_single_message(msg_obj))
-            tasks.append(task)
-
-        if tasks:
-            await asyncio.gather(*tasks)
+        await asyncio.gather(downloader_task(), uploader_task())
+        await download_queue.join() # Wait for all items in the queue to be processed
 
         if not users_loop.get(user_id):
             await pin_msg.edit("🛑 Batch process cancelled.")
@@ -504,3 +532,11 @@ async def topic_batch(_, message):
                 print(f"Failed to log critical error: {log_e}")
     finally:
         users_loop[user_id] = False
+        # Ensure any remaining downloaded files are cleaned up if process stops prematurely
+        while not download_queue.empty():
+            item = await download_queue.get_nowait()
+            if item and item is not None:
+                msg_obj, file_path = item
+                if file_path and os.path.exists(file_path):
+                    os.remove(file_path)
+            download_queue.task_done()
