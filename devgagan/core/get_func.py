@@ -608,8 +608,8 @@ class SmartTelegramBot:
             await app.send_message(LOG_GROUP, f"**4GB Upload Error:** {str(e)}")
         finally:
             await edit_msg.delete()
-
-    async def _process_message(self, userbot, msg: Message, sender: int, edit_msg: Message):
+    
+    async def _process_message(self, userbot, msg: Message, sender: int, edit_msg: Message, downloaded_file_path: Optional[str] = None):
         """Processes a fetched message object for downloading and uploading."""
         file_path = None
         try:
@@ -636,13 +636,16 @@ class SmartTelegramBot:
             if await self._handle_direct_media(msg, target_chat_id, topic_id, edit_msg.id, media_type):
                 return
             
-            # Download file
-            await edit_msg.edit("**📥 Downloading...**")
-            
-            progress_args = ("╭──────────────╮\n│ **__Downloading...__**\n├────────", edit_msg, time.time())
-            file_path = await userbot.download_media(
-                msg, file_name=filename, progress=progress_bar, progress_args=progress_args
-            )
+            # Use pre-downloaded file path if available (for pipeline processing)
+            if downloaded_file_path:
+                file_path = downloaded_file_path
+            else:
+                # Download file
+                await edit_msg.edit("**📥 Downloading...**")
+                progress_args = ("╭──────────────╮\n│ **__Downloading...__**\n├────────", edit_msg, time.time())
+                file_path = await userbot.download_media(
+                    msg, file_name=filename, progress=progress_bar, progress_args=progress_args
+                )
             
             # Process caption and filename
             caption = await self.process_user_caption(msg.caption.markdown if msg.caption else "", sender)
@@ -685,7 +688,7 @@ class SmartTelegramBot:
                 await edit_msg.edit(f"**Error:** {str(e)}")
             except:
                 pass
-        finally:
+        finally: # This cleanup is now handled by the uploader_task in main.py
             # Cleanup
             if file_path:
                 await self.file_ops._cleanup_file(file_path)
